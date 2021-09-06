@@ -1,5 +1,3 @@
-let N_expression = 0
-
 class Evaluator {
     getRepresentingSign(S_operator) {
         switch (S_operator) {
@@ -17,6 +15,24 @@ class Evaluator {
             case "ne": case "!=": return "ne"
             case "not": case "!": case "~": return "not"
             default: return S_operator
+        }
+    }
+
+    getReversedSign(S_operator) {
+        switch (this.getRepresentingSign(S_operator)) {
+            case "and": return "nand"
+            case "nand": return "and"
+            case "or": return "nor"
+            case "nor": return "or"
+            case "xor": return "xnor"
+            case "xnor": return "xor"
+            case "lt": return "ge"
+            case "le": return "gt"
+            case "gt": return "le"
+            case "ge": return "lt"
+            case "eq": return "ne"
+            case "ne": return "eq"
+            default: throw new Error("No reversed sign is found for the given operator")
         }
     }
 
@@ -61,6 +77,7 @@ class Evaluator {
         for (let i = 0; i < N_variableTotal; i++) {
             A_variables.push(new Expression(i, N_variableTotal))
         }
+        A_variables.push(A_variables[0].not)
         return A_variables
     }
 }
@@ -71,8 +88,9 @@ class Expression extends Evaluator {
         if (typeof argument1 === "number") {
             this.isVar = true
             this.isExpr = false
-            this.varId = argument1
+            this.varIdx = argument1
             this.varTotal = argument2
+            this.name = "Var" + (this.varIdx + 1)
         }
         else {
             this.isExpr = true
@@ -100,54 +118,118 @@ class Expression extends Evaluator {
 
     _generate(S_operator, rightElmnt) {
         if (rightElmnt === undefined)
-            throw new Error("Got undefined as a right hand element. Expecting a value or an expression")
-
-        return new Expression(this.getRepresentingSign(S_operator), [this, rightElmnt], this.varTotal)
+            throw new Error("Received 'undefined' as a right hand element. Expecting a value or an expression")
+        if (typeof rightElmnt === "function")
+            throw new Error("Received function as a right hand element. Expecting a value or an expression." + "\n" +
+                "       This error is often seen when more variable-Objects are used than those created by the 'Evaluator.build' method.")
+        else return new Expression(this.getRepresentingSign(S_operator), [this, rightElmnt], this.varTotal)
     }
 
-    run() {
-        if (arguments.length !== this.varTotal) throw new Error(`Wrong number of arguments. There should be ${this.varTotal} arguments.`)
+    run(...A_values) {
+        if (A_values.length !== this.varTotal) throw new Error(`Wrong number of arguments. There should be ${this.varTotal} arguments.`)
 
         if (this.isExpr) {
             const elmntL = this.children[0], elmntR = this.children[1]
 
             let BNS_left
-            if (elmntL.isExpr) BNS_left = elmntL.run(...arguments)
-            else if (elmntL.isVar) BNS_left = arguments[elmntL.varId]
+            if (elmntL.isExpr) BNS_left = elmntL.run(...A_values)
+            else if (elmntL.isVar) BNS_left = A_values[elmntL.varIdx]
             else BNS_left = elmntL
 
             let BNS_right
-            if (elmntR.isExpr) BNS_right = elmntR.run(...arguments)
-            else if (elmntR.isVar) BNS_right = arguments[elmntR.varId]
+            if (elmntR?.isExpr) BNS_right = elmntR.run(...A_values)
+            else if (elmntR?.isVar) BNS_right = A_values[elmntR.varIdx]
             else BNS_right = elmntR
 
             return this.evaluate(BNS_left, this.operator, BNS_right)
         }
-        else return arguments[this.varId]
+        else return A_values[this.varIdx]
+    }
+
+    hasComparisonOperator() {
+        if (this.isExpr) {
+            if (["lt", "le", "gt", "ge"].includes(this.operator)) return true
+            let leftElmnt = this.children[0], rightElmnt = this.children[1]
+            return (leftElmnt.isExpr) ? leftElmnt.hasComparisonOperator() : false || (rightElmnt.isExpr) ? rightElmnt.hasComparisonOperator() : false
+        }
+        else return false
     }
 
     getTruth() {
-        let truth = { table: [], number: BigInt(0) }
-        let N_truthNumber = BigInt(1)
-        for (let i = 0; i < Math.pow(2, this.varTotal); i++) {
-            let A_arguments = Array(this.varTotal).fill(false)
-            let S_trueOrFalse = i.toString(2)
-            for (let ii = 0; ii < S_trueOrFalse.length; ii++) {
-                if (S_trueOrFalse[S_trueOrFalse.length - 1 - ii] === "1") A_arguments[ii] = true
+        if (this.hasComparisonOperator())
+            throw new Error("This method is not usable for expressions that includes comparison operators.")
+        if (this.truth)
+            return this.truth
+        else {
+            let truth = { table: [], number: BigInt(0) }
+            let N_currentTruth = BigInt(1)
+            for (let i = 0; i < Math.pow(2, this.varTotal); i++) {
+                let A_arguments = Array(this.varTotal).fill(false)
+                let S_trueOrFalse = i.toString(2)
+                for (let ii = 0; ii < S_trueOrFalse.length; ii++) {
+                    if (S_trueOrFalse[S_trueOrFalse.length - 1 - ii] === "1") A_arguments[ii] = true
+                }
+                truth.table.push({ value: A_arguments, result: this.run(...A_arguments) })
+                if (this.run(...A_arguments)) truth.number += N_currentTruth
+                N_currentTruth *= BigInt(2)
             }
-
-            truth.table.push({ value: A_arguments, result: this.run(...A_arguments) })
-            if (this.run(...A_arguments)) truth.number += N_truthNumber
-
-            N_truthNumber *= BigInt(2)
+            this.truth = truth
+            return truth
         }
+    }
 
-        return truth
+    isSameWith(rightElmnt) {
+        const leftElmnt = this
+        if (rightElmnt === true) return leftElmnt.getTruth().number === getTruthNumberOfTrue(this.varTotal)
+        else if (rightElmnt === false) return leftElmnt.getTruth().number === BigInt(0)
+        else if (leftElmnt.isVar && rightElmnt.isVar) return leftElmnt.varIdx === rightElmnt.varIdx
+        else if (rightElmnt.isExpr || rightElmnt.isVar) return leftElmnt.getTruth().number === rightElmnt.getTruth().number
+        else throw new Error("Only an expression-Object, variable-Object, true, or false is allowed as an argument.")
+
+        function getTruthNumberOfTrue(N_variableTotal) {
+            let N_accumulated = BigInt(0)
+            let N_currentTruth = BigInt(1)
+            for (let i = 0; i < Math.pow(2, N_variableTotal); i++) {
+                N_accumulated += N_currentTruth
+                N_currentTruth *= BigInt(2)
+            }
+            return N_accumulated
+        }
+    }
+
+    summarize() {
+        if (this.isExpr === false) return this
+        else {
+            let leftElmnt = this.children[0], rightElmnt = this.children[1]
+            if (this.isSameWith(true)) return true
+            else if (this.isSameWith(false)) return false
+            else if (this.operator === "not")
+                if (rightElmnt.isExpr === false) return this
+                else if (rightElmnt.operator === "not") return rightElmnt.children[1].summarize()
+                else return rightElmnt.children[0].summarize()[this.getReversedSign(rightElmnt.operator)](rightElmnt.children[1].summarize())
+            else if (this.isSameWith(leftElmnt)) return leftElmnt.summarize()
+            else if (this.isSameWith(rightElmnt)) return rightElmnt.summarize()
+            else if (this.isSameWith(this.not(leftElmnt))) return this.not(leftElmnt).summarize()
+            else if (this.isSameWith(this.not(rightElmnt))) return this.not(rightElmnt).summarize()
+            else return leftElmnt.summarize()[this.operator](rightElmnt.summarize())
+        }
+    }
+
+    toString() {
+        if (this.isExpr) {
+            let leftElmnt = this.children[0], rightElmnt = this.children[1]
+            if (this.operator === "not")
+                return `not(${rightElmnt.toString()})`
+            else if (leftElmnt.isExpr && leftElmnt.operator !== "not"
+                && (leftElmnt.operator === "or" || (leftElmnt.operator === "and" && this.operator !== "and")) && this.operator !== "or")
+                return `(${leftElmnt.toString()}) ${this.operator} ${rightElmnt.toString()}`
+            else if (rightElmnt.isExpr && rightElmnt.operator !== "not"
+                && (this.operator !== rightElmnt.operator || (this.operator !== "or" && rightElmnt.operator === "and")))
+                return `${leftElmnt.toString()} ${this.operator} (${rightElmnt.toString()})`
+            else
+                return `${leftElmnt.toString()} ${this.operator} ${rightElmnt.toString()}`
+        }
+        else if (typeof this.name === "string") return this.name
+        else throw new Error("All variable-Objects should be name in string type.")
     }
 }
-
-
-// test
-// const evaluator = new Evaluator()
-// const [VAR1, VAR2, VAR3] = evaluator.build(3)
-// console.log(VAR1.or(VAR3).and(VAR1.or(VAR2)).getTruth().table)
